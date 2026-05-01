@@ -1,40 +1,42 @@
-import pandas as pd
+import os
+import joblib
+import random
 import numpy as np
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler
-import joblib
-import os
 
-# 1. 建立存放模型的資料夾
-os.makedirs('data', exist_ok=True)
+MODEL_DIR = "models"
+if not os.path.exists(MODEL_DIR): os.makedirs(MODEL_DIR)
 
-# 2. 模擬正常流量數據 (作為訓練基準)
-# size: 請求大小, depth: JSON深度, proto_count: 關鍵字出現次數
-np.random.seed(42)
-normal_data = pd.DataFrame({
-    'size': np.random.normal(500, 100, 1000),
-    'depth': np.random.poisson(2, 1000),
-    'proto_count': np.random.poisson(0, 1000)
-})
+def train():
+    print("提高包容度")
+    X_train = []
 
-# 3. 特徵標準化 (Standardization)
-# 建立 Scaler 並「訓練 (fit)」它學習正常數據的分布
-scaler = StandardScaler()
-scaler.fit(normal_data) 
+    # 模擬 2000 筆更具多樣性的正常流量
+    for _ in range(2000):
+        # [Key敏感詞數, 全文敏感詞數, 符號比例, 嵌套深度]
+        X_train.append([
+            0,                             # Key 絕對不能有攻擊詞
+            random.randint(0, 1),          # 允許全文偶爾出現 1 個關鍵字
+            random.uniform(0.05, 0.45),    # 符號比提高到 0.45
+            random.randint(1, 6)           # 嵌套深度提高到 6 層
+        ])
+    
+    # 手動加入一些「極端複雜但正常」的邊界樣本
+    X_train.append([0, 2, 0.5, 8]) 
 
-# 將數據轉換為模型可理解的格式
-X_scaled = scaler.transform(normal_data)
+    X_train = np.array(X_train)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_train)
+    
+    # 調整 OneClassSVM 參數：
+    # nu 稍微增加到 0.02，這會讓邊界稍微「軟」化一點，減少誤判
+    clf = OneClassSVM(kernel='rbf', gamma='scale', nu=0.02)
+    clf.fit(X_scaled)
+    
+    joblib.dump(clf, os.path.join(MODEL_DIR, "pp_owa_svm.pkl"))
+    joblib.dump(scaler, os.path.join(MODEL_DIR, "scaler.pkl"))
+    print(f"模型邊界擴張完成！樣本數: {len(X_train)}")
 
-# 4. 訓練 OneClassSVM 模型
-# nu=0.1 代表預期有 10% 的數據可能是異常值
-model = OneClassSVM(kernel='rbf', nu=0.1, gamma='auto')
-model.fit(X_scaled)
-
-# 5. 儲存模型與 Scaler (這步最重要，代理伺服器會讀取這兩個檔案)
-joblib.dump(model, 'data/ocsvm_model.pkl')
-joblib.dump(scaler, 'data/scaler.pkl')
-
-print("模型訓練完成！")
-print("已產生檔案：data/ocsvm_model.pkl, data/scaler.pkl")
-print("訓練數據範例：")
-print(normal_data.head())
+if __name__ == "__main__":
+    train()

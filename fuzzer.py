@@ -2,47 +2,68 @@ import requests
 import random
 import time
 import string
+import json
 
 # ================= 配置區 =================
 TARGET_URL = "http://localhost:5000/api/merge"
-TOTAL_REQUESTS = 10000 
+TOTAL_REQUESTS = 10000
 # =========================================
 
 def generate_random_string(length=10):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
+def generate_advanced_attack():
+    """產生包含編碼與深度嵌套的變體攻擊"""
+    seeds = ["__proto__", "constructor", "prototype"]
+    # 混淆技巧：1.原樣 2.URL編碼 3.Unicode轉義
+    obfuscations = [
+        lambda x: x,
+        lambda x: x.replace("_", "%5f"), 
+        lambda x: "".join([f"\\u{ord(c):04x}" for c in x])
+    ]
+    
+    target_key = random.choice(obfuscations)(random.choice(seeds))
+    
+    # 隨機產生 1-4 層的嵌套結構，增加掃描難度
+    payload = {"timestamp": time.time(), "trace_id": generate_random_string(8)}
+    curr = payload
+    for _ in range(random.randint(1, 3)):
+        new_key = generate_random_string(5)
+        curr[new_key] = {}
+        curr = curr[new_key]
+    
+    # 將攻擊載荷注入最深層
+    curr[target_key] = {"polluted": "true", "role": "admin"}
+    return payload
+
 def run_fuzzer():
-    print(f"測試...")
+    print(f"啟動測試...")
     
     start_time = time.time()
     attack_count = 0
     attack_blocked = 0
     normal_count = 0
-    false_positives = 0 # 誤判次數
+    false_positives = 0 
 
-    seeds = ["__proto__", "constructor", "prototype"]
-    
     for i in range(TOTAL_REQUESTS):
-        # 決定這筆是攻擊還是正常流量
         is_attack = random.random() > 0.5
         
         if is_attack:
             attack_count += 1
-            key = random.choice(seeds)
-            # 攻擊：將關鍵字放入敏感位置
-            payload = { "user": { key: { "admin": True } }, "data": generate_random_string(20) }
+            payload = generate_advanced_attack()
         else:
             normal_count += 1
-            # 正常流量：故意包含敏感字眼，但作為普通字串內容 (測試模型智慧度)
+            # 正常流量：故意包含敏感字眼但作為 Value (測試語義區分能力)
             fake_out = random.choice([
-                f"I love this new prototype of my project",
-                f"The constructor of this building is famous",
-                f"Ordinary data with {generate_random_string(5)}",
-                f"Long data: " + "A" * 500  # 測試長度特徵是否造成誤報
+                f"Project status: active prototype phase",
+                f"User requested a new constructor function",
+                f"Regular data logging {generate_random_string(10)}",
+                "A" * 300 # 長字串壓力
             ])
-            payload = { "comment": fake_out, "status": "active" }
+            payload = {"comment": fake_out, "metadata": {"tags": ["dev", "test"]}}
 
         try:
+            # 傳送 JSON 請求
             response = requests.post(TARGET_URL, json=payload, timeout=2)
             
             if is_attack:
@@ -50,31 +71,29 @@ def run_fuzzer():
                     attack_blocked += 1
             else:
                 if response.status_code == 403:
-                    # 這裡是誤判！明明是正常流量卻被攔截
                     false_positives += 1
-                    # print(f"⚠️ [誤判] 正常內容被攔截: {payload['comment'][:30]}...")
 
-        except Exception as e:
+        except Exception:
             continue
 
-        if (i + 1) % 500 == 0:
-            print(f"已完成 {i + 1} 筆...")
+        if (i + 1) % 1000 == 0:
+            print(f"已完成 {i + 1} 筆 ")
 
     end_time = time.time()
     duration = end_time - start_time
     
-    # --- 數據計算 ---
+    # --- 指標計算 ---
     recall = (attack_blocked / attack_count) * 100 if attack_count > 0 else 0
     fp_rate = (false_positives / normal_count) * 100 if normal_count > 0 else 0
     
     print("\n" + "="*40)
-    print("測試報告 (Final Stress Test)")
+    print("測試報告")
     print(f"🔹 總請求數: {TOTAL_REQUESTS}")
-    print(f"🔹 攻擊樣本數: {attack_count} | 攔截數: {attack_blocked}")
-    print(f"🔹 正常樣本數: {normal_count} | 誤判數: {false_positives}")
+    print(f"🔹 攻擊樣本 (含變體): {attack_count} | 攔截數: {attack_blocked}")
+    print(f"🔹 正常樣本 (含混淆): {normal_count} | 誤判數: {false_positives}")
     print("-" * 20)
     print(f"召回率 (Recall): {recall:.2f}%")
-    print(f"誤判率 (False Positive Rate): {fp_rate:.2f}%")
+    print(f"誤判率 (FP Rate): {fp_rate:.2f}%")
     print(f"平均延遲: {(duration/TOTAL_REQUESTS)*1000:.2f} ms/req")
     print("="*40)
 

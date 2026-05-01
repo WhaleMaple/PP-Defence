@@ -1,54 +1,93 @@
-from flask import Flask, request, jsonify
-import pandas as pd
-import numpy as np
-from sklearn.svm import OneClassSVM
-from sklearn.preprocessing import StandardScaler
-import joblib
 import os
+import json
+import joblib
+import numpy as np
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-class PPDetector:
-    def __init__(self):
-        self.model = None
-        self.scaler = None
-        self.load_model()
+# ================= 配置與模型載入 =================
+MODEL_PATH = "models/pp_owa_svm.pkl"
+SCALER_PATH = "models/scaler.pkl"
+
+if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
+    clf = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    print("ML模型與縮放器載入成功")
+else:
+    clf, scaler = None, None
+    print("找不到模型檔案，請先執行訓練腳本")
+
+# ================= 混合特徵提取邏輯 =================
+
+def extract_features(data):
+    """
+    特徵向量：[0:Key敏感詞數, 1:全文敏感詞數, 2:特殊符號比例, 3:最大嵌套深度]
+    """
+    features = [0, 0, 0, 0]
+    sensitive_words = ['__proto__', 'constructor', 'prototype']
     
-    def load_model(self):
-        if os.path.exists('data/ocsvm_model.pkl'):
-            self.model = joblib.load('data/ocsvm_model.pkl')
-            self.scaler = joblib.load('data/scaler.pkl')
-            print("✅ ML模型載入")
-        else:
-            print("⚠️ 訓練模型: python train_model.py")
+    raw_str = str(data).lower()
     
-    def extract_features(self, data):
-        return np.array([[
-            len(data),  # 請求大小
-            self.max_nest_depth(data),  # 巢狀深度
-            data.count('__proto__') + data.count('constructor')  # PP特徵
-        ]])
+    # 特徵 1: 全文敏感詞出現次數 (捕捉藏在 Value 裡的攻擊)
+    for word in sensitive_words:
+        features[1] += raw_str.count(word)
     
-    def max_nest_depth(self, obj):
+    def recursive_scan(obj, depth):
+        features[3] = max(features[3], depth)
         if isinstance(obj, dict):
-            return 1 + max((self.max_nest_depth(v) for v in obj.values()), default=0)
-        return 0
+            for k, v in obj.items():
+                # 特徵 0: 專門檢查 Key (高風險特徵)
+                for word in sensitive_words:
+                    if word in str(k).lower():
+                        features[0] += 1
+                recursive_scan(v, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj:
+                recursive_scan(item, depth + 1)
 
-detector = PPDetector()
+    try:
+        # 確保資料是 dict 格式進行結構掃描
+        dict_data = data if isinstance(data, dict) else json.loads(data)
+        recursive_scan(dict_data, 1)
+    except:
+        pass
 
-@app.before_request
-def detect_pp():
-    if request.path == '/api/merge' and request.is_json:
-        features = detector.extract_features(str(request.json))
-        if detector.model is not None:
-            pred = detector.model.predict(detector.scaler.transform(features))
-            if pred[0] == -1:
-                return jsonify({'error': 'PP攻擊阻擋!'}), 403
-        print(f"特徵: {features.flatten()}")
+    # 特徵 2: 符號比例
+    if len(raw_str) > 0:
+        special_chars = sum(1 for c in raw_str if c in '{}[].:,"\'\\')
+        features[2] = special_chars / len(raw_str)
+
+    return np.array(features).reshape(1, -1)
+
+# ================= API 路由 =================
 
 @app.route('/api/merge', methods=['POST'])
-def proxy_merge():
-    return app.response_class('Proxy到Node.js', status=200)
+def ml_filter():
+    if clf is None:
+        return jsonify({"status": "error", "message": "Model not loaded"}), 500
+
+    try:
+        req_data = request.get_json()
+        if not req_data:
+            return jsonify({"status": "ignored"}), 200
+
+        feat_vector = extract_features(req_data)
+        scaled_feat = scaler.transform(feat_vector)
+        prediction = clf.predict(scaled_feat)
+        
+        # Log 輸出便於除錯
+        res_text = "正常" if prediction[0] == 1 else "異常 (攔截)"
+        print(f"DEBUG - 特徵: {feat_vector.tolist()} | 預測: {res_text}")
+
+        if prediction[0] == -1:
+            return jsonify({"status": "blocked", "reason": "ML Anomaly Detected"}), 403
+
+        return jsonify({"status": "success", "data": "OK"}), 200
+
+    except Exception as e:
+        print(f"處理錯誤: {e}")
+        return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
