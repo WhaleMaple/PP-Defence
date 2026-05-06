@@ -1,6 +1,13 @@
+# 虛擬環境
 venv/
+env/
+
+
 __pycache__/
-*.pkl
-node_modules/
-.vscode/
-data/*.csv
+*.py[cod]
+
+models/*.pkl
+*.csv
+
+# GoTestWAF 測試報告
+reports/

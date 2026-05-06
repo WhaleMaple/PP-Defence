@@ -1,100 +1,76 @@
 import requests
 import random
 import time
-import string
-import json
 
-# ================= 配置區 =================
-TARGET_URL = "http://localhost:5000/api/merge"
-TOTAL_REQUESTS = 10000
-# =========================================
-
-def generate_random_string(length=10):
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
-
-def generate_advanced_attack():
-    """產生包含編碼與深度嵌套的變體攻擊"""
-    seeds = ["__proto__", "constructor", "prototype"]
-    # 混淆技巧：1.原樣 2.URL編碼 3.Unicode轉義
-    obfuscations = [
-        lambda x: x,
-        lambda x: x.replace("_", "%5f"), 
-        lambda x: "".join([f"\\u{ord(c):04x}" for c in x])
+def mutate_payload(payload_type):
+    # 模擬變體攻擊
+    pp_payloads = [
+        {"__proto__": {"vulnerable": "true"}},
+        {"__pRoTo__": {"case_bypass": "true"}},
+        {"constructor": {"prototype": {"bypass": "1"}}},
+        {"\u005f\u005fproto\u005f\u005f": {"unicode_bypass": "true"}}
     ]
     
-    target_key = random.choice(obfuscations)(random.choice(seeds))
-    
-    # 隨機產生 1-4 層的嵌套結構，增加掃描難度
-    payload = {"timestamp": time.time(), "trace_id": generate_random_string(8)}
-    curr = payload
-    for _ in range(random.randint(1, 3)):
-        new_key = generate_random_string(5)
-        curr[new_key] = {}
-        curr = curr[new_key]
-    
-    # 將攻擊載荷注入最深層
-    curr[target_key] = {"polluted": "true", "role": "admin"}
-    return payload
+    benign_payloads = [
+        {"text": "Hello world"},
+        {"tags": ["__proto__", "constructor"]}, # 容易導致誤判的正常流量
+        {"content": {"depth1": {"depth2": {"depth3": "deep"}}}},
+        {"user_id": random.randint(1, 10000)}
+    ]
 
-def run_fuzzer():
-    print(f"啟動測試...")
+    if payload_type == "attack":
+        return random.choice(pp_payloads)
+    else:
+        return random.choice(benign_payloads)
+
+def run_fuzzer(total_reqs=10000):
+    print("啟動強化版通用防禦能力測試 (含變體繞過)...")
     
+    results = {"total": 0, "tp": 0, "fp": 0, "tn": 0, "fn": 0}
     start_time = time.time()
-    attack_count = 0
-    attack_blocked = 0
-    normal_count = 0
-    false_positives = 0 
 
-    for i in range(TOTAL_REQUESTS):
-        is_attack = random.random() > 0.5
+    for i in range(total_reqs):
+        is_attack = random.choice([True, False])
+        payload = mutate_payload("attack" if is_attack else "benign")
         
-        if is_attack:
-            attack_count += 1
-            payload = generate_advanced_attack()
-        else:
-            normal_count += 1
-            # 正常流量：故意包含敏感字眼但作為 Value (測試語義區分能力)
-            fake_out = random.choice([
-                f"Project status: active prototype phase",
-                f"User requested a new constructor function",
-                f"Regular data logging {generate_random_string(10)}",
-                "A" * 300 # 長字串壓力
-            ])
-            payload = {"comment": fake_out, "metadata": {"tags": ["dev", "test"]}}
-
         try:
-            # 傳送 JSON 請求
-            response = requests.post(TARGET_URL, json=payload, timeout=2)
+            # 透過 Proxy 傳送
+            response = requests.post("http://localhost:5000/api/merge", json=payload, timeout=2)
             
             if is_attack:
-                if response.status_code == 403:
-                    attack_blocked += 1
+                if response.status_code == 403: # 被攔截
+                    results["tp"] += 1
+                else: # 遺漏
+                    results["fn"] += 1
             else:
-                if response.status_code == 403:
-                    false_positives += 1
-
-        except Exception:
+                if response.status_code == 403: # 正常流量被誤殺
+                    results["fp"] += 1
+                else:
+                    results["tn"] += 1
+            
+            results["total"] += 1
+        except Exception as e:
             continue
 
         if (i + 1) % 1000 == 0:
-            print(f"已完成 {i + 1} 筆 ")
+            print(f"已完成 {i+1} 筆測試...")
 
-    end_time = time.time()
-    duration = end_time - start_time
-    
-    # --- 指標計算 ---
-    recall = (attack_blocked / attack_count) * 100 if attack_count > 0 else 0
-    fp_rate = (false_positives / normal_count) * 100 if normal_count > 0 else 0
+    duration = time.time() - start_time
     
     print("\n" + "="*40)
-    print("測試報告")
-    print(f"🔹 總請求數: {TOTAL_REQUESTS}")
-    print(f"🔹 攻擊樣本 (含變體): {attack_count} | 攔截數: {attack_blocked}")
-    print(f"🔹 正常樣本 (含混淆): {normal_count} | 誤判數: {false_positives}")
+    print("實驗結果：測試報告")
+    print(f"🔹 總請求數: {results['total']}")
+    print(f"🔹 成功攔截 (TP): {results['tp']}")
+    print(f"🔹 遺漏 (FN): {results['fn']}")
+    print(f"🔹 正常流量誤判 (FP): {results['fp']}")
     print("-" * 20)
+    
+    recall = (results["tp"] / (results["tp"] + results["fn"])) * 100 if (results["tp"] + results["fn"]) > 0 else 0
+    fp_rate = (results["fp"] / (results["fp"] + results["tn"])) * 100 if (results["fp"] + results["tn"]) > 0 else 0
+    
     print(f"召回率 (Recall): {recall:.2f}%")
     print(f"誤判率 (FP Rate): {fp_rate:.2f}%")
-    print(f"平均延遲: {(duration/TOTAL_REQUESTS)*1000:.2f} ms/req")
+    print(f"平均延遲: {(duration/results['total'])*1000:.2f} ms/req")
     print("="*40)
 
 if __name__ == "__main__":

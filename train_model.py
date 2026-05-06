@@ -1,42 +1,43 @@
-import os
-import joblib
-import random
+import pandas as pd
 import numpy as np
-from sklearn.svm import OneClassSVM
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import joblib
+import os
 
-MODEL_DIR = "models"
-if not os.path.exists(MODEL_DIR): os.makedirs(MODEL_DIR)
+# 建立 models 資料夾
+os.makedirs("models", exist_ok=True)
 
-def train():
-    print("提高包容度")
-    X_train = []
-
-    # 模擬 2000 筆更具多樣性的正常流量
-    for _ in range(2000):
-        # [Key敏感詞數, 全文敏感詞數, 符號比例, 嵌套深度]
-        X_train.append([
-            0,                             # Key 絕對不能有攻擊詞
-            random.randint(0, 1),          # 允許全文偶爾出現 1 個關鍵字
-            random.uniform(0.05, 0.45),    # 符號比提高到 0.45
-            random.randint(1, 6)           # 嵌套深度提高到 6 層
-        ])
+def generate_data():
+    print("正在生成訓練數據...")
+    # 攻擊樣本 (特徵明顯)
+    malicious = np.random.normal(loc=[1.0, 0.15, 2.0, 3.0], scale=0.05, size=(5000, 4))
+    # 正常樣本 (特徵乾淨)
+    normal = np.random.normal(loc=[0.0, 0.05, 0.0, 1.0], scale=0.02, size=(5000, 4))
     
-    # 手動加入一些「極端複雜但正常」的邊界樣本
-    X_train.append([0, 2, 0.5, 8]) 
-
-    X_train = np.array(X_train)
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_train)
+    df_m = pd.DataFrame(malicious, columns=['v1', 'v2', 'v3', 'v4'])
+    df_m['label'] = 1 # 1為攻擊
     
-    # 調整 OneClassSVM 參數：
-    # nu 稍微增加到 0.02，這會讓邊界稍微「軟」化一點，減少誤判
-    clf = OneClassSVM(kernel='rbf', gamma='scale', nu=0.02)
-    clf.fit(X_scaled)
+    df_n = pd.DataFrame(normal, columns=['v1', 'v2', 'v3', 'v4'])
+    df_n['label'] = 0 # 0為正常
     
-    joblib.dump(clf, os.path.join(MODEL_DIR, "pp_owa_svm.pkl"))
-    joblib.dump(scaler, os.path.join(MODEL_DIR, "scaler.pkl"))
-    print(f"模型邊界擴張完成！樣本數: {len(X_train)}")
+    return pd.concat([df_m, df_n]).sample(frac=1).reset_index(drop=True)
 
-if __name__ == "__main__":
-    train()
+df = generate_data()
+X = df.drop('label', axis=1)
+y = df['label']
+
+# 訓練 Random Forest (給正常樣本 10倍 權重，強迫降低誤判)
+model = RandomForestClassifier(
+    n_estimators=100,
+    class_weight={0: 10.0, 1: 1.0},
+    max_depth=5,
+    random_state=42
+)
+model.fit(X.values, y)
+
+# 儲存新模型
+MODEL_PATH = "models/rf_model.pkl"
+joblib.dump(model, MODEL_PATH)
+print(f"✅ 模型已成功儲存至 {MODEL_PATH} (不需要 Scaler)")
